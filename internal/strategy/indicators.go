@@ -7,33 +7,66 @@ import (
     "binance-trading-bot/pkg/types"
 )
 
-// CalculateRSI - Relative Strength Index
+// CalculateRSI - Relative Strength Index (FIXED VERSION)
 func CalculateRSI(prices []float64, period int) float64 {
     if len(prices) < period+1 {
         return 50.0
     }
     
-    gains := 0.0
-    losses := 0.0
+    // Calculate price changes
+    gains := make([]float64, 0)
+    losses := make([]float64, 0)
     
-    for i := len(prices) - period; i < len(prices); i++ {
+    for i := 1; i < len(prices); i++ {
         change := prices[i] - prices[i-1]
         if change > 0 {
-            gains += change
+            gains = append(gains, change)
+            losses = append(losses, 0)
         } else {
-            losses += math.Abs(change)
+            gains = append(gains, 0)
+            losses = append(losses, math.Abs(change))
         }
     }
     
-    avgGain := gains / float64(period)
-    avgLoss := losses / float64(period)
+    if len(gains) < period {
+        return 50.0
+    }
     
+    // First RS calculation uses SMA
+    avgGain := 0.0
+    avgLoss := 0.0
+    for i := 0; i < period; i++ {
+        avgGain += gains[i]
+        avgLoss += losses[i]
+    }
+    avgGain /= float64(period)
+    avgLoss /= float64(period)
+    
+    // Subsequent calculations use smoothed averages (Wilder's smoothing)
+    for i := period; i < len(gains); i++ {
+        avgGain = (avgGain*float64(period-1) + gains[i]) / float64(period)
+        avgLoss = (avgLoss*float64(period-1) + losses[i]) / float64(period)
+    }
+    
+    // Handle edge cases
     if avgLoss == 0 {
-        return 100.0
+        if avgGain == 0 {
+            return 50.0  // No movement
+        }
+        return 100.0  // All gains, no losses
     }
     
     rs := avgGain / avgLoss
-    rsi := 100 - (100 / (1 + rs))
+    rsi := 100.0 - (100.0 / (1.0 + rs))
+    
+    // Safety bounds
+    if rsi < 0 {
+        rsi = 0
+    }
+    if rsi > 100 {
+        rsi = 100
+    }
+    
     return rsi
 }
 
@@ -363,4 +396,82 @@ func CalculateMomentumScore(prices []float64, volumes []float64) float64 {
     }
     
     return score
+}
+
+// NEW: DetectMarketRegime - Identify if market is trending, ranging, or volatile
+func DetectMarketRegime(klines []types.Kline) (regime string, confidence float64) {
+    if len(klines) < 50 {
+        return "UNKNOWN", 0.5
+    }
+    
+    closes := make([]float64, len(klines))
+    for i, k := range klines {
+        closes[i] = k.Close
+    }
+    
+    // Calculate indicators
+    atr := CalculateATR(klines, 14)
+    sma := CalculateSMA(closes, 20)
+    currentPrice := closes[len(closes)-1]
+    
+    // Price deviation from SMA
+    deviation := math.Abs(currentPrice-sma) / sma * 100
+    
+    // ATR as % of price (volatility measure)
+    volatility := (atr / currentPrice) * 100
+    
+    // Count closes above/below SMA for trend consistency
+    aboveSMA := 0
+    for i := len(closes) - 20; i < len(closes); i++ {
+        if closes[i] > sma {
+            aboveSMA++
+        }
+    }
+    consistency := float64(aboveSMA) / 20.0
+    
+    // Classify regime
+    if volatility > 5.0 {
+        return "VOLATILE", 0.8
+    } else if consistency > 0.7 || consistency < 0.3 {
+        return "TRENDING", math.Abs(consistency-0.5) * 2
+    } else if deviation < 2.0 {
+        return "RANGING", 0.7
+    }
+    
+    return "TRANSITIONING", 0.5
+}
+
+// NEW: AnalyzeVolumeProfile - Detect accumulation vs distribution
+func AnalyzeVolumeProfile(klines []types.Kline, periods int) (signal string, strength float64) {
+    if len(klines) < periods {
+        return "NEUTRAL", 0.5
+    }
+    
+    recent := klines[len(klines)-periods:]
+    
+    upVolume := 0.0
+    downVolume := 0.0
+    
+    for _, k := range recent {
+        if k.Close > k.Open {
+            upVolume += k.Volume
+        } else {
+            downVolume += k.Volume
+        }
+    }
+    
+    totalVolume := upVolume + downVolume
+    if totalVolume == 0 {
+        return "NEUTRAL", 0.5
+    }
+    
+    buyPressure := upVolume / totalVolume
+    
+    if buyPressure > 0.65 {
+        return "ACCUMULATION", buyPressure
+    } else if buyPressure < 0.35 {
+        return "DISTRIBUTION", 1 - buyPressure
+    }
+    
+    return "NEUTRAL", 0.5
 }

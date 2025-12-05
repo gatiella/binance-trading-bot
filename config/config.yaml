@@ -1,3 +1,6 @@
+# Enhanced Binance Trading Bot Configuration
+# ============================================
+
 binance:
   api_key: ""  # Will load from .env
   secret_key: ""  # Will load from .env
@@ -9,40 +12,133 @@ telegram:
   enabled: true
 
 strategy:
+  # Position Management
   max_positions: 3
   position_size_usdt: 50.0
-  stop_loss_percent: 2.0
-  take_profit_percent: 5.0
-  trailing_stop_percent: 1.5
+  
+  # Risk Management
+  stop_loss_percent: 2.0          # Base stop loss (will adjust based on ATR)
+  take_profit_percent: 5.0        # Base take profit (will adjust based on signal strength)
+  trailing_stop_percent: 1.5      # Initial trailing stop
   trailing_stop_enabled: true
   
   # Hot Coin Filters
-  min_volume_usdt: 1000000.0           # $1M minimum volume
-  min_price_change_percent: 3.0         # 3% minimum price change
+  min_volume_usdt: 1000000.0      # $1M minimum volume
+  min_price_change_percent: 3.0   # 3% minimum price change
   
-  # Advanced Settings
-  use_multi_timeframe: true             # Analyze multiple timeframes
-  min_signal_strength: 0.60             # 60% minimum score to generate signal
-  require_volume_spike: false           # Require volume spike confirmation
-  volume_spike_multiplier: 1.5          # Volume must be 1.5x average
+  # Signal Generation
+  min_signal_strength: 0.60       # 60% minimum score to generate signal
+  use_multi_timeframe: true       # Analyze multiple timeframes (RECOMMENDED)
   
-  # Risk Settings
-  max_rsi_entry: 75                     # Don't buy if RSI above this
-  min_rsi_entry: 40                     # Don't buy if RSI below this (oversold bounce)
-  require_ema_crossover: false          # Require EMA12 > EMA26
-  require_macd_positive: false          # Require MACD histogram positive
+  # Volume Confirmation
+  require_volume_spike: false     # Set to true for more conservative entries
+  volume_spike_multiplier: 1.5    # Volume must be 1.5x average
+  
+  # RSI Filters
+  max_rsi_entry: 75               # Don't buy if RSI above this
+  min_rsi_entry: 40               # Don't buy if RSI below this
+  
+  # Additional Filters
+  require_ema_crossover: false    # Require EMA12 > EMA26
+  require_macd_positive: false    # Require MACD histogram positive
 
 risk:
-  max_daily_loss_usdt: 100.0
-  max_drawdown_percent: 10.0
-  
-# For more conservative (safer) signals:
-# - Increase min_signal_strength to 0.70
-# - Set require_volume_spike to true
-# - Increase min_volume_usdt to 2000000
-# - Decrease max_rsi_entry to 70
+  max_daily_loss_usdt: 100.0      # Stop trading if daily loss exceeds this
+  max_drawdown_percent: 10.0      # Maximum acceptable drawdown
 
-# For more aggressive (more signals):
-# - Decrease min_signal_strength to 0.50
-# - Decrease min_price_change_percent to 2.0
-# - Decrease min_volume_usdt to 500000
+# ============================================
+# PRESET CONFIGURATIONS
+# ============================================
+
+# 🔴 CONSERVATIVE (Fewer but Higher Quality Signals)
+# Uncomment these settings for conservative trading:
+# strategy:
+#   min_signal_strength: 0.75
+#   min_volume_usdt: 2000000.0
+#   min_price_change_percent: 5.0
+#   require_volume_spike: true
+#   volume_spike_multiplier: 2.0
+#   max_rsi_entry: 70
+#   min_rsi_entry: 45
+#   require_ema_crossover: true
+
+# 🟡 BALANCED (Default - Good Signal Quality)
+# Current settings above are balanced
+
+# 🟢 AGGRESSIVE (More Signals, Higher Risk)
+# Uncomment these settings for aggressive trading:
+# strategy:
+#   min_signal_strength: 0.50
+#   min_volume_usdt: 500000.0
+#   min_price_change_percent: 2.0
+#   require_volume_spike: false
+#   max_rsi_entry: 80
+#   min_rsi_entry: 35
+
+# ============================================
+# DYNAMIC FEATURES (Automatic)
+# ============================================
+# The following features work automatically:
+# 
+# 1. Dynamic Position Sizing:
+#    - Strong signals (90%+): 100% of base position size
+#    - Medium signals (70-89%): 75% of base position size
+#    - Weak signals (60-69%): 50% of base position size
+#    - High volatility: Reduces position size by 25-50%
+#    - Winning streak: Increases position size by 20%
+#    - Losing streak: Reduces position size by 40%
+#
+# 2. Dynamic Stop Loss (ATR-based):
+#    - Uses 2x ATR as stop loss distance
+#    - Automatically adjusts to market volatility
+#    - Min: 1.5%, Max: 4.0%
+#
+# 3. Dynamic Take Profit:
+#    - Strong signals (90%+): 1.5x base target
+#    - Medium signals (70-89%): 1.0x base target
+#    - Weak signals (60-69%): 0.75x base target
+#
+# 4. Adaptive Trailing Stop:
+#    - Initial: 1.5% trailing
+#    - At +5% profit: Tightens to 1.25%
+#    - At +8% profit: Tightens to 1.0%
+#
+# 5. Market Regime Adaptation:
+#    - VOLATILE: Requires 75% signal strength
+#    - TRENDING: Requires 55% signal strength
+#    - RANGING: Requires 70% signal strength
+#
+# 6. Performance-Based Protection:
+#    - Pauses trading after 4 losses in last 5 trades
+#    - Uses Kelly Criterion for optimal sizing
+#
+# 7. Volume Profile Analysis:
+#    - ACCUMULATION: Adds +5 points to score
+#    - DISTRIBUTION: No bonus
+#    - NEUTRAL: No change
+#
+# ============================================
+# TIPS FOR OPTIMIZATION
+# ============================================
+#
+# For Crypto Bull Markets:
+# - Lower min_signal_strength to 0.55
+# - Lower min_price_change_percent to 2.5%
+# - Increase max_rsi_entry to 80
+#
+# For Crypto Bear/Sideways Markets:
+# - Increase min_signal_strength to 0.70
+# - Increase min_volume_usdt to 1500000
+# - Require volume spike: true
+# - Lower max_rsi_entry to 70
+#
+# For High Volatility Periods:
+# - The bot automatically adjusts position sizes
+# - Consider increasing stop_loss_percent to 2.5-3.0%
+# - Consider reducing max_positions to 2
+#
+# For Low Volatility Periods:
+# - Lower min_price_change_percent to 2.0%
+# - Can increase max_positions to 4-5
+#
+# ============================================

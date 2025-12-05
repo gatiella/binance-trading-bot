@@ -4,6 +4,7 @@ package types
 
 import "time"
 
+// Config represents the bot configuration
 type Config struct {
     Binance struct {
         APIKey    string `yaml:"api_key"`
@@ -18,20 +19,27 @@ type Config struct {
     } `yaml:"telegram"`
     
     Strategy struct {
-        MaxPositions         int     `yaml:"max_positions"`
-        PositionSize         float64 `yaml:"position_size_usdt"`
-        StopLossPercent      float64 `yaml:"stop_loss_percent"`
-        TakeProfitPercent    float64 `yaml:"take_profit_percent"`
-        TrailingStopPercent  float64 `yaml:"trailing_stop_percent"`
-        TrailingStopEnabled  bool    `yaml:"trailing_stop_enabled"`
-        MinVolume            float64 `yaml:"min_volume_usdt"`
-        MinPriceChange       float64 `yaml:"min_price_change_percent"`
-        UseMultiTimeframe    bool    `yaml:"use_multi_timeframe"`
+        MaxPositions          int     `yaml:"max_positions"`
+        PositionSize          float64 `yaml:"position_size_usdt"`
+        StopLossPercent       float64 `yaml:"stop_loss_percent"`
+        TakeProfitPercent     float64 `yaml:"take_profit_percent"`
+        TrailingStopPercent   float64 `yaml:"trailing_stop_percent"`
+        TrailingStopEnabled   bool    `yaml:"trailing_stop_enabled"`
+        MinVolume             float64 `yaml:"min_volume_usdt"`
+        MinPriceChange        float64 `yaml:"min_price_change_percent"`
+        UseMultiTimeframe     bool    `yaml:"use_multi_timeframe"`
+        MinSignalStrength     float64 `yaml:"min_signal_strength"`
+        RequireVolumeSpike    bool    `yaml:"require_volume_spike"`
+        VolumeSpikeMultiplier float64 `yaml:"volume_spike_multiplier"`
+        MaxRSIEntry           float64 `yaml:"max_rsi_entry"`
+        MinRSIEntry           float64 `yaml:"min_rsi_entry"`
+        RequireEMACrossover   bool    `yaml:"require_ema_crossover"`
+        RequireMACDPositive   bool    `yaml:"require_macd_positive"`
     } `yaml:"strategy"`
     
     Risk struct {
-        MaxDailyLoss    float64 `yaml:"max_daily_loss_usdt"`
-        MaxDrawdown     float64 `yaml:"max_drawdown_percent"`
+        MaxDailyLoss float64 `yaml:"max_daily_loss_usdt"`
+        MaxDrawdown  float64 `yaml:"max_drawdown_percent"`
     } `yaml:"risk"`
 }
 
@@ -49,7 +57,7 @@ type Position struct {
     Symbol              string
     EntryPrice          float64
     CurrentPrice        float64
-    HighestPrice        float64  // For trailing stop
+    HighestPrice        float64 // For trailing stop
     Quantity            float64
     Side                string
     StopLoss            float64
@@ -59,6 +67,7 @@ type Position struct {
     PnL                 float64
     PnLPercent          float64
     EntryTime           time.Time
+    LastUpdateTime      time.Time // NEW: Track last price update
 }
 
 type Signal struct {
@@ -68,17 +77,19 @@ type Signal struct {
     Strength  float64
     Reason    string
     Timestamp time.Time
-    MTFScore  float64  // Multi-timeframe score
+    MTFScore  float64 // Multi-timeframe score
+    ATR       float64 // NEW: Average True Range for volatility
+    Regime    string  // NEW: Market regime (TRENDING, RANGING, VOLATILE)
 }
 
 type Trade struct {
-    Symbol       string
-    Side         string
-    Quantity     float64
-    Price        float64
-    Commission   float64
-    Timestamp    time.Time
-    OrderID      string
+    Symbol     string
+    Side       string
+    Quantity   float64
+    Price      float64
+    Commission float64
+    Timestamp  time.Time
+    OrderID    string
 }
 
 type Kline struct {

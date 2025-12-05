@@ -11,17 +11,17 @@ import (
 )
 
 type MomentumStrategy struct {
-    config       *types.Config
-    client       *binance.Client
-    priceHistory map[string][]float64
+    config        *types.Config
+    client        *binance.Client
+    priceHistory  map[string][]float64
     volumeHistory map[string][]float64
 }
 
 func NewMomentumStrategy(config *types.Config, client *binance.Client) *MomentumStrategy {
     return &MomentumStrategy{
-        config:       config,
-        client:       client,
-        priceHistory: make(map[string][]float64),
+        config:        config,
+        client:        client,
+        priceHistory:  make(map[string][]float64),
         volumeHistory: make(map[string][]float64),
     }
 }
@@ -48,10 +48,11 @@ func (s *MomentumStrategy) FindHotCoins(tickers []types.Ticker) []types.Ticker {
         hotCoins = append(hotCoins, ticker)
     }
     
-    // Sort by a composite score (price change + volume)
+    // NEW: Better composite scoring for ranking
     sort.Slice(hotCoins, func(i, j int) bool {
-        scoreI := hotCoins[i].PriceChangePercent + (hotCoins[i].QuoteVolume / 1000000)
-        scoreJ := hotCoins[j].PriceChangePercent + (hotCoins[j].QuoteVolume / 1000000)
+        // Weight price change more heavily, but also consider volume
+        scoreI := (hotCoins[i].PriceChangePercent * 2.0) + (hotCoins[i].QuoteVolume / 1000000)
+        scoreJ := (hotCoins[j].PriceChangePercent * 2.0) + (hotCoins[j].QuoteVolume / 1000000)
         return scoreI > scoreJ
     })
     
@@ -69,7 +70,9 @@ func (s *MomentumStrategy) AnalyzeMultipleTimeframes(symbol string) ([]types.Tim
     
     totalScore := 0.0
     validTimeframes := 0
-    weights := map[string]float64{"5m": 1.0, "15m": 1.5, "1h": 2.0, "4h": 2.5}
+    
+    // NEW: Adjusted weights - longer timeframes get more weight
+    weights := map[string]float64{"5m": 0.5, "15m": 1.0, "1h": 2.0, "4h": 3.0}
     
     for _, tf := range timeframes {
         klines, err := s.client.GetKlines(symbol, tf, 100)
@@ -115,6 +118,9 @@ func (s *MomentumStrategy) AnalyzeMultipleTimeframes(symbol string) ([]types.Tim
             totalScore += strength * weight
         } else if trend == "BEARISH" {
             totalScore -= strength * weight
+        } else {
+            // NEUTRAL gets 50% weight
+            totalScore += 0.5 * weight
         }
         
         currentPrice := closes[len(closes)-1]
@@ -213,14 +219,37 @@ func (s *MomentumStrategy) GenerateSignal(ticker types.Ticker, positions []types
         }
     }
     
+    // Get klines for advanced analysis
+    klines, err := s.client.GetKlines(ticker.Symbol, "5m", 50)
+    var regime string
+    var regimeConfidence float64
+    var volumeProfile string
+    var volumeStrength float64
+    var atrValue float64
+    
+    if err == nil && len(klines) > 0 {
+        // NEW: Market regime detection
+        regime, regimeConfidence = DetectMarketRegime(klines)
+        log.Printf("   📈 Market Regime: %s (%.0f%% confidence)", regime, regimeConfidence*100)
+        
+        // NEW: Volume profile analysis
+        volumeProfile, volumeStrength = AnalyzeVolumeProfile(klines, 20)
+        log.Printf("   📊 Volume Profile: %s (%.0f%% strength)", volumeProfile, volumeStrength*100)
+        
+        // Get ATR for volatility
+        atrValue = CalculateATR(klines, 14)
+    } else {
+        regime = "UNKNOWN"
+        regimeConfidence = 0.5
+        volumeProfile = "NEUTRAL"
+        volumeStrength = 0.5
+        atrValue = 0
+    }
+    
     // Calculate indicators on 1-minute data
     var rsi float64
     if len(prices) >= 15 {
         rsi = CalculateRSI(prices, 14)
-        // Ensure RSI is valid
-        if rsi < 0 || rsi > 100 {
-            rsi = 50.0
-        }
     } else {
         rsi = 50.0
     }
@@ -269,6 +298,9 @@ func (s *MomentumStrategy) GenerateSignal(ticker types.Ticker, positions []types
         volumeGood := ticker.QuoteVolume >= s.config.Strategy.MinVolume
         volumeConfirmation := volumeSpike && volumeRatio > 1.5
         
+        // NEW: Volume profile confirmation
+        volumeProfileBullish := volumeProfile == "ACCUMULATION"
+        
         // 3. RSI - Not overbought, ideally in sweet spot
         rsiHealthy := rsi >= 40 && rsi <= 75
         rsiOptimal := rsi >= 45 && rsi <= 65
@@ -290,11 +322,15 @@ func (s *MomentumStrategy) GenerateSignal(ticker types.Ticker, positions []types
         mtfBullish := mtfScore > 0.50
         mtfStrong := mtfScore > 0.65
         
+        // NEW: 8. Market regime filter
+        regimeFavorable := regime == "TRENDING" || regime == "TRANSITIONING"
+        regimeHighConfidence := regimeConfidence > 0.6
+        
         // Log all criteria
         log.Printf("   ✅ Momentum: %v (+%.2f%% >= %.1f%%)", 
             momentumStrong, ticker.PriceChangePercent, s.config.Strategy.MinPriceChange)
-        log.Printf("   ✅ Volume: %v ($%.0f >= $%.0f) | Spike: %v (%.1fx)", 
-            volumeGood, ticker.QuoteVolume, s.config.Strategy.MinVolume, volumeSpike, volumeRatio)
+        log.Printf("   ✅ Volume: %v ($%.0f >= $%.0f) | Spike: %v (%.1fx) | Profile: %s", 
+            volumeGood, ticker.QuoteVolume, s.config.Strategy.MinVolume, volumeSpike, volumeRatio, volumeProfile)
         log.Printf("   ✅ RSI: Healthy=%v Optimal=%v NotExtreme=%v (%.1f)", 
             rsiHealthy, rsiOptimal, rsiNotExtreme, rsi)
         log.Printf("   ✅ Price: AboveSMA=%v ($%.4f vs $%.4f) | BullishEMA=%v", 
@@ -303,13 +339,14 @@ func (s *MomentumStrategy) GenerateSignal(ticker types.Ticker, positions []types
         log.Printf("   ✅ BB: InRange=%v AboveMid=%v ($%.4f/$%.4f/$%.4f)", 
             bbPosition, bbBullish, lowerBB, middleBB, upperBB)
         log.Printf("   ✅ MTF: Bullish=%v Strong=%v (%.2f)", mtfBullish, mtfStrong, mtfScore)
+        log.Printf("   ✅ Regime: Favorable=%v HighConf=%v (%s)", regimeFavorable, regimeHighConfidence, regime)
         
-        // === SCORING SYSTEM ===
+        // === SCORING SYSTEM (Enhanced) ===
         score := 0.0
         maxScore := 0.0
         reasons := []string{}
         
-        // Must-have criteria (70% of score)
+        // Must-have criteria (60% of score)
         if momentumStrong {
             score += 15
             reasons = append(reasons, fmt.Sprintf("+%.1f%% momentum", ticker.PriceChangePercent))
@@ -324,6 +361,13 @@ func (s *MomentumStrategy) GenerateSignal(ticker types.Ticker, positions []types
             }
         }
         maxScore += 20
+        
+        // NEW: Volume profile adds to score
+        if volumeProfileBullish {
+            score += 5
+            reasons = append(reasons, "accumulation phase")
+        }
+        maxScore += 5
         
         if rsiHealthy && rsiNotExtreme {
             score += 10
@@ -344,7 +388,7 @@ func (s *MomentumStrategy) GenerateSignal(ticker types.Ticker, positions []types
         }
         maxScore += 20
         
-        // Nice-to-have criteria (30% of score)
+        // Nice-to-have criteria (40% of score)
         if aboveSMA {
             score += 5
             reasons = append(reasons, "above SMA20")
@@ -368,15 +412,39 @@ func (s *MomentumStrategy) GenerateSignal(ticker types.Ticker, positions []types
         }
         maxScore += 5
         
+        // NEW: Regime scoring
+        if regimeFavorable && regimeHighConfidence {
+            score += 10
+            reasons = append(reasons, fmt.Sprintf("%s regime", regime))
+        } else if regime == "VOLATILE" {
+            // Penalize volatile markets
+            score -= 5
+            reasons = append(reasons, "volatile market (-5pts)")
+        } else if regime == "RANGING" {
+            // Slight penalty for ranging markets
+            score -= 3
+        }
+        maxScore += 10
+        
         // Calculate final strength
         signal.Strength = score / maxScore
         
         log.Printf("   📊 SCORE: %.0f/%.0f (%.1f%%)", score, maxScore, signal.Strength*100)
         
-        // Generate BUY signal if score is good AND RSI is not extreme
+        // NEW: Dynamic threshold based on market regime
         threshold := 0.60
+        if regime == "VOLATILE" {
+            threshold = 0.75  // Require much higher score in volatile markets
+            log.Printf("   ⚠️  Volatile market detected - raising threshold to %.0f%%", threshold*100)
+        } else if regime == "TRENDING" {
+            threshold = 0.55  // Can be slightly more aggressive in trending markets
+            log.Printf("   ✅ Trending market - lowering threshold to %.0f%%", threshold*100)
+        } else if regime == "RANGING" {
+            threshold = 0.70  // Need strong signal in ranging markets
+            log.Printf("   ⚠️  Ranging market detected - raising threshold to %.0f%%", threshold*100)
+        }
         
-        // CRITICAL: Reject if RSI is at extremes (likely calculation error or extreme overbought/oversold)
+        // CRITICAL: Reject if RSI is at extremes
         if !rsiNotExtreme {
             signal.Reason = fmt.Sprintf("Extreme RSI detected (%.1f) - rejecting signal for safety", rsi)
             log.Printf("   🚫 REJECTED: %s", signal.Reason)
@@ -411,6 +479,10 @@ func (s *MomentumStrategy) GenerateSignal(ticker types.Ticker, positions []types
             }
             
             signal.Reason = reason
+            
+            // NEW: Store ATR in signal for risk management
+            signal.ATR = atrValue
+            
             log.Printf("   🎯 BUY SIGNAL GENERATED - Strength: %.0f%%", signal.Strength*100)
             
         } else {
@@ -424,8 +496,6 @@ func (s *MomentumStrategy) GenerateSignal(ticker types.Ticker, positions []types
             }
             if !rsiHealthy {
                 missing = append(missing, fmt.Sprintf("poor RSI (%.1f)", rsi))
-            } else if !rsiNotExtreme {
-                missing = append(missing, fmt.Sprintf("extreme RSI (%.1f)", rsi))
             }
             if !mtfBullish {
                 missing = append(missing, fmt.Sprintf("MTF bearish (%.2f)", mtfScore))
@@ -433,8 +503,11 @@ func (s *MomentumStrategy) GenerateSignal(ticker types.Ticker, positions []types
             if !aboveSMA {
                 missing = append(missing, "below SMA20")
             }
+            if !regimeFavorable {
+                missing = append(missing, fmt.Sprintf("unfavorable regime (%s)", regime))
+            }
             
-            signal.Reason = fmt.Sprintf("Score too low (%.0f%% < 60%%): ", signal.Strength*100)
+            signal.Reason = fmt.Sprintf("Score too low (%.0f%% < %.0f%%): ", signal.Strength*100, threshold*100)
             for i, m := range missing {
                 if i > 0 {
                     signal.Reason += ", "
