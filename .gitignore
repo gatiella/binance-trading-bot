@@ -4,7 +4,7 @@
 .env.*.local
 
 # Compiled binary
-binance
+/binance
 *.exe
 
 # Log files
