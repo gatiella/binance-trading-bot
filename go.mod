@@ -1,4 +1,3 @@
-// File: go.mod
 module binance-trading-bot
 
 go 1.21
