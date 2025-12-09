@@ -9,6 +9,7 @@ import (
     "encoding/json"
     "fmt"
     "io"
+    "log"
     "net/http"
     "net/url"
     "strconv"
@@ -29,6 +30,8 @@ func NewClient(apiKey, secretKey string, testnet bool) *Client {
         baseURL = "https://testnet.binance.vision"
     }
     
+    log.Printf("🔧 Binance Client initialized with baseURL: %s", baseURL)
+    
     return &Client{
         apiKey:     apiKey,
         secretKey:  secretKey,
@@ -46,21 +49,44 @@ func (c *Client) sign(params string) string {
 func (c *Client) Get24hrTickers() ([]types.Ticker, error) {
     url := fmt.Sprintf("%s/api/v3/ticker/24hr", c.baseURL)
     
+    log.Printf("📡 Fetching tickers from: %s", url)
+    
     resp, err := c.httpClient.Get(url)
     if err != nil {
-        return nil, err
+        log.Printf("❌ HTTP request failed: %v", err)
+        return nil, fmt.Errorf("HTTP request failed: %v", err)
     }
     defer resp.Body.Close()
     
+    log.Printf("📊 Response status: %d", resp.StatusCode)
+    
     body, err := io.ReadAll(resp.Body)
     if err != nil {
-        return nil, err
+        log.Printf("❌ Failed to read response body: %v", err)
+        return nil, fmt.Errorf("failed to read response: %v", err)
+    }
+    
+    // Log response preview
+    preview := string(body)
+    if len(preview) > 500 {
+        preview = preview[:500] + "..."
+    }
+    log.Printf("📄 Response preview (first 500 chars): %s", preview)
+    
+    // Check for non-200 status
+    if resp.StatusCode != 200 {
+        log.Printf("❌ API returned error status %d: %s", resp.StatusCode, string(body))
+        return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
     }
     
     var rawTickers []map[string]interface{}
     if err := json.Unmarshal(body, &rawTickers); err != nil {
-        return nil, err
+        log.Printf("❌ JSON unmarshal failed: %v", err)
+        log.Printf("❌ Full response: %s", string(body))
+        return nil, fmt.Errorf("unmarshal error: %v | response: %s", err, preview)
     }
+    
+    log.Printf("✅ Successfully parsed %d tickers", len(rawTickers))
     
     var tickers []types.Ticker
     for _, raw := range rawTickers {
