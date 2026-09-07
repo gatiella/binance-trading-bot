@@ -302,7 +302,17 @@ func (s *MomentumStrategy) GenerateSignal(ticker types.Ticker, positions []types
         volumeProfileBullish := volumeProfile == "ACCUMULATION"
         
         // 3. RSI - Not overbought, ideally in sweet spot
-        rsiHealthy := rsi >= 40 && rsi <= 75
+        // NEW: honor configured RSI bounds (config.yaml min_rsi_entry /
+        // max_rsi_entry) instead of ignoring them, falling back to
+        // sensible defaults if left unset (0) in config.
+        minRSI, maxRSI := s.config.Strategy.MinRSIEntry, s.config.Strategy.MaxRSIEntry
+        if minRSI <= 0 {
+            minRSI = 40
+        }
+        if maxRSI <= 0 {
+            maxRSI = 75
+        }
+        rsiHealthy := rsi >= minRSI && rsi <= maxRSI
         rsiOptimal := rsi >= 45 && rsi <= 65
         rsiNotExtreme := rsi > 5 && rsi < 95
         
@@ -449,6 +459,31 @@ func (s *MomentumStrategy) GenerateSignal(ticker types.Ticker, positions []types
             signal.Reason = fmt.Sprintf("Extreme RSI detected (%.1f) - rejecting signal for safety", rsi)
             log.Printf("   🚫 REJECTED: %s", signal.Reason)
             return signal
+        }
+        
+        // NEW: Honor hard-requirement config flags that were previously
+        // read from config.yaml but never enforced.
+        if s.config.Strategy.RequireVolumeSpike && !volumeConfirmation {
+            signal.Reason = fmt.Sprintf("Volume spike required but not present (%.1fx, need >1.5x)", volumeRatio)
+            log.Printf("   🚫 REJECTED: %s", signal.Reason)
+            return signal
+        }
+        if s.config.Strategy.RequireEMACrossover && !bullishEMA {
+            signal.Reason = "EMA12/26 bullish crossover required but not present"
+            log.Printf("   🚫 REJECTED: %s", signal.Reason)
+            return signal
+        }
+        if s.config.Strategy.RequireMACDPositive && !macdPositive {
+            signal.Reason = "Positive MACD histogram required but not present"
+            log.Printf("   🚫 REJECTED: %s", signal.Reason)
+            return signal
+        }
+        
+        // NEW: config.yaml's min_signal_strength acts as an absolute
+        // floor under the regime-based threshold, so raising it (e.g.
+        // the "CONSERVATIVE" preset) actually has an effect.
+        if s.config.Strategy.MinSignalStrength > threshold {
+            threshold = s.config.Strategy.MinSignalStrength
         }
         
         if signal.Strength >= threshold {

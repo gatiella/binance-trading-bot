@@ -12,10 +12,43 @@ import (
     "log"
     "net/http"
     "net/url"
+    "regexp"
     "strconv"
     "time"
     "binance-trading-bot/pkg/types"
 )
+
+// validSymbolPattern matches well-formed Binance trading pair symbols
+// (uppercase letters/digits only). Testnet occasionally returns junk/test
+// entries (e.g. non-ASCII "symbols") that don't match real pairs.
+var validSymbolPattern = regexp.MustCompile(`^[A-Z0-9]{5,20}$`)
+
+// safeString safely extracts a string field from a raw JSON map,
+// returning ok=false instead of panicking if the field is missing
+// or not a string.
+func safeString(raw map[string]interface{}, key string) (string, bool) {
+    v, exists := raw[key]
+    if !exists {
+        return "", false
+    }
+    s, ok := v.(string)
+    return s, ok
+}
+
+// safeFloat safely extracts and parses a numeric string field,
+// returning ok=false if the field is missing, not a string, or not
+// parseable as a float.
+func safeFloat(raw map[string]interface{}, key string) (float64, bool) {
+    s, ok := safeString(raw, key)
+    if !ok {
+        return 0, false
+    }
+    f, err := strconv.ParseFloat(s, 64)
+    if err != nil {
+        return 0, false
+    }
+    return f, true
+}
 
 type Client struct {
     apiKey     string
@@ -89,14 +122,36 @@ func (c *Client) Get24hrTickers() ([]types.Ticker, error) {
     log.Printf("✅ Successfully parsed %d tickers", len(rawTickers))
     
     var tickers []types.Ticker
+    skipped := 0
     for _, raw := range rawTickers {
-        symbol, _ := raw["symbol"].(string)
+        symbol, ok := safeString(raw, "symbol")
+        if !ok || !validSymbolPattern.MatchString(symbol) {
+            // Skip malformed/junk entries (e.g. test-only symbols on
+            // testnet that aren't real ASCII trading pairs)
+            skipped++
+            continue
+        }
         
-        priceChange, _ := strconv.ParseFloat(raw["priceChange"].(string), 64)
-        priceChangePercent, _ := strconv.ParseFloat(raw["priceChangePercent"].(string), 64)
-        lastPrice, _ := strconv.ParseFloat(raw["lastPrice"].(string), 64)
-        volume, _ := strconv.ParseFloat(raw["volume"].(string), 64)
-        quoteVolume, _ := strconv.ParseFloat(raw["quoteVolume"].(string), 64)
+        priceChange, ok1 := safeFloat(raw, "priceChange")
+        priceChangePercent, ok2 := safeFloat(raw, "priceChangePercent")
+        lastPrice, ok3 := safeFloat(raw, "lastPrice")
+        volume, ok4 := safeFloat(raw, "volume")
+        quoteVolume, ok5 := safeFloat(raw, "quoteVolume")
+        
+        if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
+            log.Printf("⚠️  Skipping %s - malformed ticker fields", symbol)
+            skipped++
+            continue
+        }
+        
+        // Sanity check: prices/volumes should never be negative, and a
+        // real traded pair should have a positive last price.
+        if lastPrice <= 0 || volume < 0 || quoteVolume < 0 {
+            log.Printf("⚠️  Skipping %s - implausible values (price=%.8f, volume=%.8f, quoteVolume=%.8f)",
+                symbol, lastPrice, volume, quoteVolume)
+            skipped++
+            continue
+        }
         
         tickers = append(tickers, types.Ticker{
             Symbol:             symbol,
@@ -107,6 +162,10 @@ func (c *Client) Get24hrTickers() ([]types.Ticker, error) {
             QuoteVolume:        quoteVolume,
             Timestamp:          time.Now(),
         })
+    }
+    
+    if skipped > 0 {
+        log.Printf("🧹 Filtered out %d malformed/junk ticker entries", skipped)
     }
     
     return tickers, nil
@@ -122,20 +181,43 @@ func (c *Client) GetKlines(symbol, interval string, limit int) ([]types.Kline, e
     }
     defer resp.Body.Close()
     
-    body, _ := io.ReadAll(resp.Body)
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return nil, fmt.Errorf("failed to read klines response: %v", err)
+    }
+    
+    if resp.StatusCode != 200 {
+        return nil, fmt.Errorf("klines API error (status %d): %s", resp.StatusCode, string(body))
+    }
     
     var rawKlines [][]interface{}
-    json.Unmarshal(body, &rawKlines)
+    if err := json.Unmarshal(body, &rawKlines); err != nil {
+        return nil, fmt.Errorf("failed to parse klines: %v", err)
+    }
     
     var klines []types.Kline
     for _, k := range rawKlines {
-        openTime := time.UnixMilli(int64(k[0].(float64)))
-        open, _ := strconv.ParseFloat(k[1].(string), 64)
-        high, _ := strconv.ParseFloat(k[2].(string), 64)
-        low, _ := strconv.ParseFloat(k[3].(string), 64)
-        close, _ := strconv.ParseFloat(k[4].(string), 64)
-        volume, _ := strconv.ParseFloat(k[5].(string), 64)
-        closeTime := time.UnixMilli(int64(k[6].(float64)))
+        if len(k) < 7 {
+            continue
+        }
+        openTimeMs, ok0 := k[0].(float64)
+        openStr, ok1 := k[1].(string)
+        highStr, ok2 := k[2].(string)
+        lowStr, ok3 := k[3].(string)
+        closeStr, ok4 := k[4].(string)
+        volumeStr, ok5 := k[5].(string)
+        closeTimeMs, ok6 := k[6].(float64)
+        if !ok0 || !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 {
+            continue
+        }
+        
+        openTime := time.UnixMilli(int64(openTimeMs))
+        open, _ := strconv.ParseFloat(openStr, 64)
+        high, _ := strconv.ParseFloat(highStr, 64)
+        low, _ := strconv.ParseFloat(lowStr, 64)
+        close, _ := strconv.ParseFloat(closeStr, 64)
+        volume, _ := strconv.ParseFloat(volumeStr, 64)
+        closeTime := time.UnixMilli(int64(closeTimeMs))
         
         klines = append(klines, types.Kline{
             OpenTime:  openTime,
@@ -167,7 +249,14 @@ func (c *Client) GetAccountBalance() (map[string]float64, error) {
     }
     defer resp.Body.Close()
     
-    body, _ := io.ReadAll(resp.Body)
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return nil, fmt.Errorf("failed to read account response: %v", err)
+    }
+    
+    if resp.StatusCode != 200 {
+        return nil, fmt.Errorf("account API error (status %d): %s", resp.StatusCode, string(body))
+    }
     
     var account struct {
         Balances []struct {
@@ -177,7 +266,9 @@ func (c *Client) GetAccountBalance() (map[string]float64, error) {
         } `json:"balances"`
     }
     
-    json.Unmarshal(body, &account)
+    if err := json.Unmarshal(body, &account); err != nil {
+        return nil, fmt.Errorf("failed to parse account response: %v", err)
+    }
     
     balances := make(map[string]float64)
     for _, b := range account.Balances {
@@ -225,8 +316,8 @@ func (c *Client) PlaceMarketOrder(symbol, side string, quantity float64) (*types
         return nil, fmt.Errorf("order failed: %s", string(body))
     }
     
-    price, _ := strconv.ParseFloat(orderResp["price"].(string), 64)
-    executedQty, _ := strconv.ParseFloat(orderResp["executedQty"].(string), 64)
+    price, _ := safeFloat(orderResp, "price")
+    executedQty, _ := safeFloat(orderResp, "executedQty")
     
     return &types.Trade{
         Symbol:    symbol,
@@ -247,7 +338,14 @@ func (c *Client) GetCurrentPrice(symbol string) (float64, error) {
     }
     defer resp.Body.Close()
     
-    body, _ := io.ReadAll(resp.Body)
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return 0, fmt.Errorf("failed to read price response: %v", err)
+    }
+    
+    if resp.StatusCode != 200 {
+        return 0, fmt.Errorf("price API error (status %d): %s", resp.StatusCode, string(body))
+    }
     
     var priceResp struct {
         Price string `json:"price"`
