@@ -10,6 +10,7 @@ import (
     "binance-trading-bot/pkg/types"
     "fmt"
     "log"
+    "net/http"
     "os"
     "strings"
     "time"
@@ -463,7 +464,34 @@ func (b *Bot) checkDailyReport() {
     }
 }
 
+func startHealthServer() {
+    port := os.Getenv("PORT")
+    if port == "" {
+        port = "8080"
+    }
+    
+    mux := http.NewServeMux()
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("binance-trading-bot is running\n"))
+    })
+    mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("ok\n"))
+    })
+    
+    log.Printf("🌐 Health check server listening on :%s", port)
+    if err := http.ListenAndServe(":"+port, mux); err != nil {
+        log.Printf("⚠️  Health server error: %v", err)
+    }
+}
+
 func main() {
+    // Run the health-check listener in the background so Render's port
+    // scan succeeds immediately, then start the bot's monitoring loop
+    // on the main goroutine as before.
+    go startHealthServer()
+    
     bot, err := NewBot("config/config.yaml")
     if err != nil {
         log.Fatalf("Failed to create bot: %v", err)
