@@ -24,7 +24,7 @@ An advanced cryptocurrency trading bot that monitors Binance for high-probabilit
 
 - Go 1.19 or higher
 - Binance account (testnet or live)
-- Telegram bot token and chat ID
+- Telegram bot token and chat ID     
 
 ## 🚀 Quick Start
 
