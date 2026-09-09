@@ -137,6 +137,15 @@ func (b *Bot) Run() {
 }
 
 func (b *Bot) mainLoop() {
+    // Guard against a panic anywhere in this cycle silently killing the
+    // whole loop with no trace in the logs.
+    defer func() {
+        if r := recover(); r != nil {
+            log.Printf("🔥 Recovered from panic in mainLoop: %v", r)
+            b.telegram.NotifyError(fmt.Sprintf("Bot recovered from panic: %v", r))
+        }
+    }()
+
     tickers, err := b.client.Get24hrTickers()
     if err != nil {
         log.Printf("❌ Error fetching tickers: %v", err)
@@ -486,12 +495,51 @@ func startHealthServer() {
     }
 }
 
+// startSelfPing keeps a Render Free web service awake by periodically
+// hitting its own /health endpoint. Render spins a Free instance down
+// after 15 minutes with NO INBOUND HTTP TRAFFIC — internal activity like
+// this bot's tickers doesn't count, since Render's scheduler has no
+// visibility into what's happening inside the process. Render sets
+// RENDER_EXTERNAL_URL automatically on deployed services, so this needs
+// no manual config; it's a no-op (and doesn't error) when running
+// anywhere else, e.g. locally or in Docker without that env var set.
+//
+// This is a best-effort workaround, not a guarantee — pair it with an
+// external monitor (UptimeRobot, cron-job.org, GitHub Actions cron) for
+// redundancy, since a self-ping can't fire if the process itself gets
+// stuck. For an always-on instance with no reliance on workarounds,
+// Render's paid Starter tier removes spin-down entirely.
+func startSelfPing() {
+    url := os.Getenv("RENDER_EXTERNAL_URL")
+    if url == "" {
+        log.Println("⚠️  RENDER_EXTERNAL_URL not set, skipping self-ping (not running on Render?)")
+        return
+    }
+
+    client := &http.Client{Timeout: 10 * time.Second}
+    ticker := time.NewTicker(10 * time.Minute)
+    defer ticker.Stop()
+
+    for range ticker.C {
+        resp, err := client.Get(url + "/health")
+        if err != nil {
+            log.Printf("⚠️  Self-ping failed: %v", err)
+            continue
+        }
+        resp.Body.Close()
+        log.Println("🔁 Self-ping OK, keeping instance awake")
+    }
+}
+
 func main() {
     // Run the health-check listener in the background so Render's port
     // scan succeeds immediately, then start the bot's monitoring loop
     // on the main goroutine as before.
     go startHealthServer()
-    
+
+    // Keep the Render Free instance from spinning down after 15 min idle.
+    go startSelfPing()
+
     bot, err := NewBot("config/config.yaml")
     if err != nil {
         log.Fatalf("Failed to create bot: %v", err)
